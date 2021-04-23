@@ -1,11 +1,5 @@
-// use reqwest;
 use warp::http;
-use warp::{http::Response, hyper::body::Bytes, Filter, Rejection, Reply};
-
-async fn log_response(response: Response<Bytes>) -> Result<impl Reply, Rejection> {
-    // println!("{:?}", response);
-    Ok(response)
-}
+use warp::{hyper::body::Bytes, Filter, Rejection};
 
 async fn edit_and_perform_request(
     proxy_address: String,
@@ -17,17 +11,20 @@ async fn edit_and_perform_request(
     body: warp::hyper::body::Bytes,
 ) -> Result<http::Response<Bytes>, Rejection> {
     let headers = {
-        use http::header::HOST;
+        use http::header::{HOST, REFERER};
         let mut headers = headers.clone();
+
         headers.remove(HOST);
         headers.insert(HOST, "pokemongo-get.com".parse().unwrap());
+
+        if let Some(referrer) = headers.remove(REFERER) {
+            let referrer = referrer.to_str().unwrap_or("");
+            let referrer = referrer.replace("localhost:3030", "pokemongo-get.com");
+            headers.insert(REFERER, referrer.parse().unwrap());
+        }
+
         headers
     };
-
-    dbg!(&uri);
-    dbg!(&headers);
-    dbg!(&method);
-    dbg!(&body);
 
     let response = warp_reverse_proxy::proxy_to_and_forward_response(
         proxy_address,
@@ -48,7 +45,7 @@ async fn edit_and_perform_request(
 fn text_with_charset(
     response: http::Response<Bytes>,
 ) -> Result<warp::http::Response<bytes::Bytes>, warp_reverse_proxy::errors::Error> {
-    use encoding_rs::{Encoding, UTF_8};
+    use regex::bytes::{NoExpand, Regex};
 
     let content_type = response
         .headers()
@@ -58,15 +55,18 @@ fn text_with_charset(
 
     let encoding_name = content_type
         .as_ref()
-        .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()))
-        .unwrap_or("utf-8");
+        .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()));
 
-    let encoding = Encoding::for_label(encoding_name.as_bytes()).unwrap_or(UTF_8);
+    let body = match encoding_name {
+        Some(_encoding_name) => {
+            let regex = Regex::new(r"https?://pokemongo-get.com/").unwrap();
+            let body = response.body();
+            let body = regex.replace_all(&body, NoExpand(b"http://localhost:3030/"));
 
-    let full = response.body();
-    let (text, _, _) = encoding.decode(&full);
-    let text = text.to_string();
-    let body = bytes::Bytes::copy_from_slice(text.as_bytes());
+            bytes::Bytes::copy_from_slice(&body)
+        }
+        None => response.body().clone(),
+    };
 
     let mut builder = http::Response::builder();
     for (k, v) in response.headers() {
@@ -99,14 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     let log = warp::log("ogipkmngo");
 
-    // Forward request to localhost in other port
-    // let app = warp::path::full()
-    //     .and(warp::query::raw())
-    //     .map(move |path: FullPath, query| warp::reply::html(format!("{:?}?{:?}", path, query)))
-    //     .with(log);
-
-    let proxy = reverse_proxy_filter("".to_string(), "http://pokemongo-get.com/".to_string())
-        .and_then(log_response);
+    let proxy = reverse_proxy_filter("".to_string(), "http://pokemongo-get.com/".to_string());
     let app = warp::any().and(proxy).with(log);
 
     // spawn proxy server

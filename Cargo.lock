@@ -613,10 +613,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
- "encoding_rs",
  "log",
  "mime",
  "pretty_env_logger",
+ "regex",
  "reqwest",
  "tokio",
  "warp",
